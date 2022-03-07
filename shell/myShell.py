@@ -3,10 +3,26 @@
 import os, sys, time, re, fileinput
 
 def redirect(args):
+    #close fd 1
     os.close(1)
+    #open path specified after >
     os.open(args[-1], os.O_CREAT | os.O_WRONLY)
+    #inherit with 1
     os.set_inheritable(1, True)
+    #execute program minus the last 2 args (> "PATH TO FILE")
     os.execve(program, args[:-2], os.environ)
+
+
+def redirect2(args):
+    #close fd 0
+    os.close(0)
+    #open path specified after <
+    os.open(args[-1], os.O_RDONLY)
+    #inherit with 0
+    os.set_inheritable(0, True)
+    #execute program minus the last 2 args (> "PATH TO FILE")
+    os.execve(program, args[:-2], os.environ)
+
 #-----------------------------------------
 def pipe(args):
     splitArgs = args.index("|")
@@ -15,43 +31,54 @@ def pipe(args):
 
     pr,pw = os.pipe()
 
-    for f in (pr, pw):
-        os.set_inheritable(f, True)
-    print("pipe fds: pr=%d, pw=%d" % (pr, pw))
+    #print("pipe fds: pr=%d, pw=%d" % (pr, pw))
 
-    print("About to fork (pid=%d)" % pid)
+    #print("About to fork (pid=%d)" % pid)
 
-    rc = os.fork()
+    rc_p = os.fork()
 
-    if rc < 0:
-        print("fork failed, returning %d\n" % rc, file=sys.stderr)
+    if rc_p < 0:
+        #print("fork failed, returning %d\n" % rc_p, file=sys.stderr)
         sys.exit(1)
 
-    elif rc == 0:                   #  child - will write to pipe
-        print("Child: My pid==%d.  Parent's pid=%d" % (os.getpid(), pid), file=sys.stderr)
+    elif rc_p == 0:                   #  child - will write to pipe
+        #print("Child: My pid==%d.  Parent's pid=%d" % (os.getpid(), pid), file=sys.stderr)
         os.close(1)                 # redirect child's stdout
         os.dup(pw)
+        os.set_inheritable(1, True)
         for fd in (pr, pw):
             for dir in re.split(":", os.environ['PATH']): # try each directory in path
-                program = "%s/%s" % (dir, args[0])
+                program = "%s/%s" % (dir, arg1[0])
                 try:
                     os.execve(program, arg1, os.environ)
                 except FileNotFoundError:             # ...expected
                     pass
-        print("hello from child")
+        #print("hello from child")
 
     else:                           # parent (forked ok)
-        print("Parent: My pid==%d.  Child's pid=%d" % (os.getpid(), rc), file=sys.stderr)
-        os.close(0)
-        os.dup(pr)
-        for fd in (pw, pr):
-            for dir in re.split(":", os.environ['PATH']): # try each directory in path
-                program = "%s/%s" % (dir, args[0])
-                try:
-                    os.execve(program, arg2, os.environ)
-                except FileNotFoundError:             # ...expected
-                    pass                           #for line in fileinput.input():
+        rc_p2 = os.fork()
+
+        if rc_p2 < 0:
+            sys.exit(1)
+
+        elif rc_p2 == 0:
+            #print("Parent: My pid==%d.  Child's pid=%d" % (os.getpid(), rc_p), file=sys.stderr)
+            os.close(0)
+            os.dup(pr)
+            os.set_inheritable(0, True)
+            for fd in (pw, pr):
+                for dir in re.split(":", os.environ['PATH']): # try each directory in path
+                    program = "%s/%s" % (dir, arg2[0])
+                    try:
+                        os.execve(program, arg2, os.environ)
+                    except FileNotFoundError:             # ...expected
+                        pass    #for line in fileinput.input():
         #   print("From child: <%s>" % line)
+        else:
+            childPidCode = os.wait()
+        for fd in (pr, pw):
+            os.close(fd)
+        childPidCode = os.wait()
 #-----------------------------------------
 #original pid
 pid = os.getpid()
@@ -71,7 +98,7 @@ while 1:
     if (args[0] == "exit"):
         sys.exit(420)
 #-----------------------------------------
-    if (args[0] == "cd"):
+    elif (args[0] == "cd"):
         try:
             if (len(args) < 2):
                 os.chdir("/home/" + os.environ['USER'])
@@ -79,6 +106,9 @@ while 1:
                 os.chdir(args[1])
         except FileNotFoundError:
             pass
+#-----------------------------------------
+    elif ("|" in args):
+        pipe(args)
 #-----------------------------------------
     else:
         rc = os.fork()
@@ -94,14 +124,12 @@ while 1:
             for dir in re.split(":", os.environ['PATH']): # try each directory in path
                 program = "%s/%s" % (dir, args[0])
                 try:
-                    if (len(args) < 2):
-                        os.execve(program, args, os.environ) # try to exec program
 
-                    elif ("|" in args):
-                        pipe(args)
-
-                    elif (">" in args):
+                    if (">" in args):
                         redirect(args)
+
+                    elif ("<" in args):
+                        redirect2(args)
 
                     else:
                          os.execve(program, args, os.environ) # try to exec program
@@ -117,3 +145,8 @@ while 1:
             childPidCode = os.wait()
             os.write(1, ("Parent: Child %d terminated with exit code %d\n" %
                          childPidCode).encode())
+
+
+
+#pipe call fork twice for each side of pipe
+#
